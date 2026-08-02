@@ -2,398 +2,275 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
 import joblib
-import warnings
+from pathlib import Path
 
-warnings.filterwarnings("ignore")
-
-# =====================================================
+# =====================
 # Konfigurasi Halaman
-# =====================================================
+# =====================
 st.set_page_config(
-    page_title="Steam Game Analytics",
+    page_title="Steam Dashboard",
     page_icon="🎮",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# =====================================================
-# Custom CSS — tampilan kartu, warna, dan tipografi
-# =====================================================
-st.markdown(
-    """
-    <style>
-    .main { background-color: #0e1117; }
-
-    /* Judul & subjudul */
-    .hero-title {
-        font-size: 2.4rem;
-        font-weight: 800;
-        background: linear-gradient(90deg, #66c0f4, #1b2838);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 0;
-    }
-    .hero-subtitle {
-        color: #8f98a0;
-        font-size: 1rem;
-        margin-top: -0.3rem;
-        margin-bottom: 1.2rem;
-    }
-
-    /* Kartu metrik custom */
-    .metric-card {
-        background: linear-gradient(145deg, #1b2838, #16202d);
-        border: 1px solid #2a3f5f;
-        border-radius: 14px;
-        padding: 1.1rem 1.3rem;
-        text-align: left;
-    }
-    .metric-label {
-        color: #8f98a0;
-        font-size: 0.82rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.03em;
-    }
-    .metric-value {
-        color: #ffffff;
-        font-size: 1.7rem;
-        font-weight: 700;
-        margin-top: 0.15rem;
-    }
-    .metric-icon { font-size: 1.4rem; }
-
-    section[data-testid="stSidebar"] {
-        border-right: 1px solid #2a3f5f;
-    }
-
-    div[data-testid="stExpander"] {
-        border: 1px solid #2a3f5f;
-        border-radius: 10px;
-    }
-
-    hr { border-color: #2a3f5f; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# =====================================================
-# Helper — format angka besar
-# =====================================================
-def format_big_number(n):
-    n = float(n)
-    if n >= 1_000_000_000:
-        return f"{n/1_000_000_000:.2f}B"
-    if n >= 1_000_000:
-        return f"{n/1_000_000:.2f}M"
-    if n >= 1_000:
-        return f"{n/1_000:.1f}K"
-    return f"{n:,.0f}"
-
-
-def format_price(cents):
-    """Kolom price/initialprice pada dataset Steam disimpan dalam sen (mis. 1999 = $19.99)."""
-    return f"${cents/100:,.2f}"
-
-
-def metric_card(label, value, icon="🎮"):
-    st.markdown(
-        f"""
-        <div class="metric-card">
-            <div class="metric-label">{icon} {label}</div>
-            <div class="metric-value">{value}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-# =====================================================
-# Load Data & Model (dengan cache dan error handling)
-# =====================================================
-REQUIRED_COLUMNS = [
-    "appid", "name", "developer", "publisher", "positive", "negative",
-    "userscore", "owners", "average_forever", "average_2weeks",
-    "median_forever", "median_2weeks", "price", "initialprice",
-    "discount", "ccu",
-]
+DATA_PATH = Path(__file__).parent / "clean_games.csv"
+MODEL_PATH = Path(__file__).parent / "steam_regression_model.pkl"
 
 MODEL_FEATURES = [
-    "owners", "positive", "negative", "average_forever",
-    "average_2weeks", "price", "discount",
+    "owners",
+    "positive",
+    "negative",
+    "average_forever",
+    "average_2weeks",
+    "price",
+    "discount",
 ]
 
 
+# =====================
+# Load Data & Model (cached)
+# =====================
 @st.cache_data
-def load_data(path: str) -> pd.DataFrame:
-    data = pd.read_csv(path)
-    missing = [c for c in REQUIRED_COLUMNS if c not in data.columns]
+def load_data(path: Path) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    required_cols = {"developer", "ccu", "owners", "price", "name"}
+    missing = required_cols - set(df.columns)
     if missing:
-        raise ValueError(f"Kolom berikut tidak ditemukan di dataset: {missing}")
-    return data
+        raise ValueError(f"Kolom berikut tidak ditemukan di CSV: {missing}")
+    return df
 
 
 @st.cache_resource
-def load_model(path: str):
+def load_model(path: Path):
     return joblib.load(path)
 
 
 try:
-    df_raw = load_data("clean_games.csv")
+    df_raw = load_data(DATA_PATH)
 except FileNotFoundError:
-    st.error("❌ File **clean_games.csv** tidak ditemukan. Pastikan file berada satu folder dengan app.py.")
+    st.error(f"File data tidak ditemukan: `{DATA_PATH.name}`. Pastikan file ini ada di folder yang sama dengan app.py.")
     st.stop()
 except ValueError as e:
-    st.error(f"❌ Dataset tidak valid: {e}")
-    st.stop()
-except Exception as e:
-    st.error(f"❌ Gagal memuat dataset: {e}")
+    st.error(str(e))
     st.stop()
 
 try:
-    model = load_model("steam_regression_model.pkl")
+    model = load_model(MODEL_PATH)
+    model_ok = True
 except FileNotFoundError:
-    st.error("❌ File **steam_regression_model.pkl** tidak ditemukan.")
-    st.stop()
+    model = None
+    model_ok = False
 except Exception as e:
-    st.error(f"❌ Gagal memuat model: {e}")
-    st.stop()
+    model = None
+    model_ok = False
+    st.sidebar.warning(f"Model gagal dimuat: {e}")
 
-if df_raw.empty:
-    st.warning("⚠️ Dataset kosong — tidak ada data untuk ditampilkan.")
-    st.stop()
-
-# =====================================================
+# =====================
 # Header
-# =====================================================
-st.markdown('<p class="hero-title">🎮 Steam Game Analytics Dashboard</p>', unsafe_allow_html=True)
-st.markdown(
-    '<p class="hero-subtitle">Final Project — Big Data & Predictive Analytics</p>',
-    unsafe_allow_html=True,
-)
+# =====================
+st.title("🎮 Steam Game Analytics Dashboard")
+st.markdown("##### Final Project — Big Data & Predictive Analytics")
+st.divider()
 
-# =====================================================
+# =====================
 # Sidebar — Filter
-# =====================================================
-st.sidebar.markdown("## 🔍 Filter Data")
+# =====================
+st.sidebar.header("🔎 Filter Data")
 
-all_devs = sorted(df_raw["developer"].dropna().unique())
-select_all = st.sidebar.checkbox("Pilih semua developer", value=True)
+all_devs = sorted(df_raw["developer"].unique())
+
+col_a, col_b = st.sidebar.columns(2)
+select_all = col_a.button("Pilih Semua", use_container_width=True)
+clear_all = col_b.button("Bersihkan", use_container_width=True)
+
+if "selected_devs" not in st.session_state:
+    st.session_state.selected_devs = all_devs
+if select_all:
+    st.session_state.selected_devs = all_devs
+if clear_all:
+    st.session_state.selected_devs = []
 
 developer = st.sidebar.multiselect(
     "Developer",
     options=all_devs,
-    default=all_devs if select_all else [],
+    default=st.session_state.selected_devs,
+    key="selected_devs",
 )
 
 price_min, price_max = int(df_raw["price"].min()), int(df_raw["price"].max())
 price_range = st.sidebar.slider(
-    "Rentang Harga (USD)",
-    min_value=price_min / 100,
-    max_value=price_max / 100,
-    value=(price_min / 100, price_max / 100),
-    step=0.5,
-    format="$%.2f",
+    "Rentang Harga (¢, dalam sen USD)",
+    min_value=price_min,
+    max_value=price_max,
+    value=(price_min, price_max),
+    help="Data harga tersimpan dalam sen (mis. 1999 = $19.99).",
 )
 
-search_name = st.sidebar.text_input("Cari nama game", "")
+owners_min, owners_max = float(df_raw["owners"].min()), float(df_raw["owners"].max())
+owners_range = st.sidebar.slider(
+    "Rentang Owners",
+    min_value=owners_min,
+    max_value=owners_max,
+    value=(owners_min, owners_max),
+    format="%.0f",
+)
 
-st.sidebar.markdown("---")
-st.sidebar.caption(f"Total baris di dataset asli: **{len(df_raw):,}**")
-
-# Terapkan filter dengan validasi
-df = df_raw.copy()
-
-if developer:
-    df = df[df["developer"].isin(developer)]
-else:
-    st.sidebar.warning("⚠️ Belum ada developer dipilih — semua data disembunyikan.")
-
-df = df[(df["price"] / 100 >= price_range[0]) & (df["price"] / 100 <= price_range[1])]
-
-if search_name.strip():
-    df = df[df["name"].str.contains(search_name.strip(), case=False, na=False)]
-
-if df.empty:
-    st.warning("⚠️ Tidak ada game yang cocok dengan filter yang dipilih. Coba ubah filter di sidebar.")
+if len(developer) == 0:
+    st.warning("Pilih minimal satu developer di sidebar untuk menampilkan data.")
     st.stop()
 
-# =====================================================
-# Metrics (kartu custom)
-# =====================================================
-m1, m2, m3, m4 = st.columns(4)
-with m1:
-    metric_card("Jumlah Game", f"{len(df):,}", "🎯")
-with m2:
-    metric_card("Rata-rata CCU", format_big_number(df["ccu"].mean()), "👥")
-with m3:
-    metric_card("Rata-rata Owners", format_big_number(df["owners"].mean()), "📦")
-with m4:
-    metric_card("Harga Rata-rata", format_price(df["price"].mean()), "💵")
+df = df_raw[
+    df_raw["developer"].isin(developer)
+    & df_raw["price"].between(*price_range)
+    & df_raw["owners"].between(*owners_range)
+].copy()
 
-st.divider()
+if df.empty:
+    st.warning("Tidak ada data yang cocok dengan filter yang dipilih. Coba longgarkan filternya.")
+    st.stop()
 
-# =====================================================
-# Tabs — struktur konten lebih rapi
-# =====================================================
-tab_overview, tab_relasi, tab_top, tab_data, tab_prediksi = st.tabs(
-    ["📊 Ringkasan", "🔗 Hubungan Antar Variabel", "🏆 Top Game", "📋 Dataset", "🔮 Prediksi"]
+# =====================
+# Tabs
+# =====================
+tab_overview, tab_viz, tab_data, tab_predict = st.tabs(
+    ["📊 Overview", "📈 Visualisasi", "🗂️ Data", "🔮 Prediksi"]
 )
 
-# ---------------- Tab: Ringkasan ----------------
+# ---------------------
+# TAB: Overview
+# ---------------------
 with tab_overview:
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Jumlah Game", f"{len(df):,}")
+    c2.metric("Rata-rata CCU", f"{df['ccu'].mean():,.0f}")
+    c3.metric("Rata-rata Owners", f"{df['owners'].mean():,.0f}")
+    c4.metric("Harga Rata-rata", f"${df['price'].mean() / 100:,.2f}")
+
+    st.divider()
+
+    top = df.sort_values("ccu", ascending=False).head(10)
+    fig_top = px.bar(
+        top,
+        x="ccu",
+        y="name",
+        orientation="h",
+        title="Top 10 Game Berdasarkan Peak CCU",
+        labels={"ccu": "Peak CCU", "name": "Game"},
+        text_auto=",.0f",
+    )
+    fig_top.update_layout(yaxis={"categoryorder": "total ascending"})
+    st.plotly_chart(fig_top, use_container_width=True)
+
+    if not top.empty:
+        st.caption(
+            f"📌 **{top.iloc[0]['name']}** memimpin dengan peak CCU sebesar "
+            f"**{top.iloc[0]['ccu']:,.0f}** pemain dalam data yang difilter."
+        )
+
+# ---------------------
+# TAB: Visualisasi
+# ---------------------
+with tab_viz:
     left, right = st.columns(2)
 
     with left:
-        fig = px.histogram(
-            df, x="ccu", nbins=40,
-            title="Distribusi Peak CCU",
-            color_discrete_sequence=["#66c0f4"],
+        fig_hist = px.histogram(
+            df, x="ccu", title="Distribusi Peak CCU", labels={"ccu": "Peak CCU"}
         )
-        fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig_hist, use_container_width=True)
 
     with right:
-        fig = px.scatter(
-            df, x="owners", y="ccu", color="price",
+        fig_scatter = px.scatter(
+            df,
+            x="owners",
+            y="ccu",
+            color="price",
             hover_name="name",
             title="Owners vs CCU",
-            color_continuous_scale="Blues",
+            labels={"owners": "Owners", "ccu": "Peak CCU", "price": "Harga (¢)"},
         )
-        fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig_scatter, use_container_width=True)
+
+    st.divider()
 
     numeric_df = df.select_dtypes(include="number").drop(columns=["appid"], errors="ignore")
-    if numeric_df.shape[1] >= 2:
-        corr = numeric_df.corr()
-        fig = px.imshow(
-            corr, text_auto=".2f", aspect="auto",
-            title="Correlation Heatmap",
-            color_continuous_scale="RdBu_r", zmin=-1, zmax=1,
-        )
-        fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Kolom numerik tidak cukup untuk membuat heatmap korelasi.")
-
-# ---------------- Tab: Hubungan Antar Variabel ----------------
-with tab_relasi:
-    st.subheader("Eksplorasi Hubungan Variabel")
-    numeric_cols = df.select_dtypes(include="number").columns.tolist()
-    numeric_cols = [c for c in numeric_cols if c != "appid"]
-
-    c1, c2 = st.columns(2)
-    x_axis = c1.selectbox("Sumbu X", numeric_cols, index=numeric_cols.index("owners") if "owners" in numeric_cols else 0)
-    y_axis = c2.selectbox("Sumbu Y", numeric_cols, index=numeric_cols.index("ccu") if "ccu" in numeric_cols else 1)
-
-    fig = px.scatter(
-        df, x=x_axis, y=y_axis, color="developer", hover_name="name",
-        title=f"{x_axis} vs {y_axis}",
+    corr = numeric_df.corr()
+    fig_heat = px.imshow(
+        corr,
+        text_auto=".2f",
+        color_continuous_scale="RdBu_r",
+        zmin=-1,
+        zmax=1,
+        title="Korelasi Antar Variabel Numerik",
     )
-    fig.update_layout(template="plotly_dark", showlegend=False, plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
-    st.plotly_chart(fig, use_container_width=True)
+    fig_heat.update_layout(height=600)
+    st.plotly_chart(fig_heat, use_container_width=True)
 
-    st.subheader("Top Developer Berdasarkan Jumlah Game")
-    dev_count = df["developer"].value_counts().head(10).reset_index()
-    dev_count.columns = ["developer", "jumlah_game"]
-    fig2 = px.bar(
-        dev_count, x="jumlah_game", y="developer", orientation="h",
-        title="10 Developer dengan Game Terbanyak",
-        color="jumlah_game", color_continuous_scale="Blues",
-    )
-    fig2.update_layout(template="plotly_dark", yaxis=dict(autorange="reversed"), plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
-    st.plotly_chart(fig2, use_container_width=True)
-
-# ---------------- Tab: Top Game ----------------
-with tab_top:
-    st.subheader("Peringkat Game")
-    sort_by = st.selectbox("Urutkan berdasarkan", ["ccu", "owners", "positive", "price"], index=0)
-    n_top = st.slider("Jumlah game ditampilkan", 5, 25, 10)
-
-    top = df.sort_values(sort_by, ascending=False).head(n_top)
-    fig = px.bar(
-        top, x="name", y=sort_by,
-        title=f"Top {n_top} Game Berdasarkan {sort_by.upper()}",
-        color=sort_by, color_continuous_scale="Blues",
-    )
-    fig.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", xaxis_tickangle=-35)
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.dataframe(
-        top[["name", "developer", "owners", "ccu", "positive", "negative", "price"]],
-        use_container_width=True,
-        hide_index=True,
-    )
-
-# ---------------- Tab: Dataset ----------------
+# ---------------------
+# TAB: Data
+# ---------------------
 with tab_data:
-    st.subheader("Dataset Lengkap (Setelah Filter)")
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.subheader("Dataset (Setelah Filter)")
+    st.dataframe(df, use_container_width=True)
+
+    csv_bytes = df.to_csv(index=False).encode("utf-8")
     st.download_button(
-        "⬇️ Unduh data terfilter (CSV)",
-        data=df.to_csv(index=False).encode("utf-8"),
-        file_name="filtered_steam_games.csv",
+        "⬇️ Download data terfilter (CSV)",
+        data=csv_bytes,
+        file_name="filtered_games.csv",
         mime="text/csv",
     )
 
-# ---------------- Tab: Prediksi ----------------
-with tab_prediksi:
-    st.subheader("🔮 Prediksi Peak Concurrent Users (CCU)")
-    st.caption("Model: Linear Regression — fitur: " + ", ".join(MODEL_FEATURES))
+# ---------------------
+# TAB: Prediksi
+# ---------------------
+with tab_predict:
+    st.header("Prediksi Peak Concurrent Users (CCU)")
 
-    with st.form("prediksi_form"):
-        c1, c2 = st.columns(2)
-        with c1:
-            owners_in = st.number_input("Owners", min_value=0, value=500_000, step=1000)
-            positive_in = st.number_input("Positive Review", min_value=0, value=10_000, step=100)
-            negative_in = st.number_input("Negative Review", min_value=0, value=500, step=50)
-            average_forever_in = st.number_input("Average Forever (menit)", min_value=0, value=300, step=10)
-        with c2:
-            average_2weeks_in = st.number_input("Average 2 Weeks (menit)", min_value=0, value=20, step=5)
-            price_in_usd = st.number_input("Harga (USD)", min_value=0.0, value=19.99, step=0.5, format="%.2f")
-            discount_in = st.number_input("Diskon (%)", min_value=0, max_value=100, value=10, step=5)
+    if not model_ok:
+        st.error(
+            f"Model tidak tersedia (`{MODEL_PATH.name}` tidak ditemukan atau gagal dimuat). "
+            "Fitur prediksi dinonaktifkan."
+        )
+    else:
+        st.caption(
+            "Model regresi linier sederhana — hasil prediksi bersifat estimasi kasar "
+            "berdasarkan pola historis, bukan jaminan akurat."
+        )
 
-        submitted = st.form_submit_button("🚀 Prediksi", use_container_width=True)
-
-    if submitted:
-        errors = []
-        if negative_in > 0 and positive_in == 0 and negative_in > owners_in:
-            errors.append("Jumlah review negatif tidak wajar dibanding owners.")
-        if positive_in + negative_in > owners_in and owners_in > 0:
-            st.warning("⚠️ Total review (positif + negatif) melebihi jumlah owners — hasil prediksi mungkin kurang realistis.")
-
-        if errors:
-            for e in errors:
-                st.error(f"❌ {e}")
-        else:
-            try:
-                price_cents = int(round(price_in_usd * 100))
-                X = pd.DataFrame(
-                    [[owners_in, positive_in, negative_in, average_forever_in,
-                      average_2weeks_in, price_cents, discount_in]],
-                    columns=MODEL_FEATURES,
+        with st.form("prediction_form"):
+            fc1, fc2 = st.columns(2)
+            with fc1:
+                owners = st.number_input("Owners", min_value=0, value=500_000, step=10_000)
+                positive = st.number_input("Positive Review", min_value=0, value=10_000, step=100)
+                negative = st.number_input("Negative Review", min_value=0, value=500, step=50)
+                average_forever = st.number_input(
+                    "Average Playtime Forever (menit)", min_value=0, value=300, step=10
                 )
-                pred = model.predict(X)[0]
-                pred = max(pred, 0)  # CCU tidak mungkin negatif
+            with fc2:
+                average_2weeks = st.number_input(
+                    "Average Playtime 2 Weeks (menit)", min_value=0, value=20, step=5
+                )
+                price = st.number_input("Harga (¢, sen USD)", min_value=0, value=1999, step=100)
+                discount = st.number_input("Discount (%)", min_value=0, max_value=100, value=10, step=5)
 
-                st.success(f"✅ Prediksi Peak CCU: **{pred:,.0f} pemain**")
+            submitted = st.form_submit_button("Prediksi", use_container_width=True)
 
-                fig = go.Figure(go.Indicator(
-                    mode="gauge+number",
-                    value=pred,
-                    title={"text": "Estimasi Peak CCU"},
-                    gauge={
-                        "axis": {"range": [0, max(pred * 1.5, df["ccu"].max())]},
-                        "bar": {"color": "#66c0f4"},
-                    },
-                ))
-                fig.update_layout(template="plotly_dark", height=300, paper_bgcolor="rgba(0,0,0,0)")
-                st.plotly_chart(fig, use_container_width=True)
+        if submitted:
+            input_df = pd.DataFrame(
+                [[owners, positive, negative, average_forever, average_2weeks, price, discount]],
+                columns=MODEL_FEATURES,
+            )
+            try:
+                pred = model.predict(input_df)[0]
+                pred_display = max(pred, 0)  # CCU tidak mungkin negatif
+                st.success(f"Prediksi Peak CCU: **{pred_display:,.0f}** pemain")
+                if pred < 0:
+                    st.caption(
+                        "⚠️ Model memprediksi nilai negatif secara mentah (dibulatkan ke 0) — "
+                        "ini wajar terjadi pada regresi linier untuk kombinasi input yang jauh dari data training."
+                    )
             except Exception as e:
-                st.error(f"❌ Gagal melakukan prediksi: {e}")
-
-st.divider()
-st.caption("Dibuat dengan Streamlit • Data: Steam Game Analytics")
+                st.error(f"Gagal melakukan prediksi: {e}")
